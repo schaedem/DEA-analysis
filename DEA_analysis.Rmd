@@ -1,0 +1,240 @@
+---
+title: "DEA_analysis"
+output: html_document
+---
+
+
+```{r read in data}
+
+```
+
+
+```{r visualize results}
+#####boxplots by region x treatment#####
+
+
+#adjustcolor("#c67b6f", alpha.f = 0.7) #find color hexcode for transparent version
+
+pal <- c("#41476b", "#675478", "#9e6374", "#c67b6f", "#de9b71", "#efbc82", "#fbdfa2",
+         "#41476BB2","#675478B2", "#9e6374B2", "#C67b6fB2", "#de9b71b2", "#efbc82b2", "#fbdfa2b2",
+        "#41476BB4","#675478B4", "#9e6374B4", "#C67b6fB4", "#de9b71b4", "#efbc82b4", "#fbdfa2b4",
+        "#41476BB6","#675478B6", "#9e6374B6", "#C67b6fB6", "#de9b71b6", "#efbc82b6", "#fbdfa2b6",
+        "#41476BB8","#675478B8", "#9e6374B8", "#C67b6fB8", "#de9b71b8", "#efbc82b8", "#fbdfa2b8")
+
+#leg <- c("#41476b", "#675478", "#9e6374", "#c67b6f", "#de9b71", "#efbc82", "#fbdfa2")
+
+
+#Plot dea rate
+
+dea_boxplot <- ggplot(station_final, aes(x=treatment, y=umol_kg_hr,
+                         fill=interaction(treatment, timepoint), group=interaction(timepoint, treatment))) +
+  geom_boxplot() +
+  scale_fill_manual(values=pal)+
+  #geom_jitter(position=position_jitter(0.1), alpha=0.5) +
+  facet_wrap(~factor(location), nrow=2, scales= "free") +
+ylab(expression(~N[2]~O~" "*mu~mol~""~kg^{-1}~soil~hr^{-1})) +
+  #ylab(expression(~N[2]O~""~mg~""~kg^{-1}~soil)) +
+  #ylab(expression(~N[2]O~)) +
+  theme(legend.position = "none") +
+  guides(fill=FALSE) +
+  theme_bw()
+#expression('z'['0m']*', m')
+#labs(x=expression(Production~rate~" "~mu~moles~NO[3]^{-1}-N~Kg^{-1})
+
+dea_boxplot
+
+  facet_wrap(~factor(location), nrow=2, scales= "free") +
+  ylab(expression(~NO[3]^{"-"}-N~""~mg~""~kg^{-1}~soil))
+
+######line graphs with conf int: ######
+  #Facet by treatment & location; 
+  #Point and line colors: timepoints
+  #Lm line for trt x
+```
+
+
+```{r stats analysis}
+
+##Mixed Models for all timepoints##
+
+names(rate_final)
+
+dea_karama <- station_final %>%
+  filter(grepl("Karama", location))
+
+dea_rubona <- station_final %>%
+  filter(grepl("Rubona", location))
+
+####Karama model####
+karama.lme1 <- lmer(umol_kg_hr ~ treatment + (1|timepoint:block) -1, data=dea_karama) # -1 is for effects coding
+summary(karama.lme1)
+anova(karama.lme1) #treatment sig at p=0 < 0.001 *
+confint(karama.lme1)
+
+#diagnostic plots
+qqmath(karama.lme1,col=dea_karama$timepoint,pch=dea_karama$timepoint, main="QQ Plot: Karama Mixed Effects Model All Timepoints")  #one timepoint has high residuals
+plot(karama.lme1,sqrt(abs(residuals(.))) ~ fitted(.),type=c("p","smooth")) #patterned residuals; consider transforming
+
+plot(karama.lme1, main="Residuals Plot: Karama Station") #heteroscedacticity of pearson residuals
+qqnorm(residuals(karama.lme1))
+
+#Means predictions and 95% CI
+ggemmeans(karama.lme1, terms="treatment") #same as above
+
+#Anova
+aov <- anova(karama.lme1) #trt sig at p=0.04
+
+#Post-hoc means sep
+tukey_k <- emmeans(karama.lme1, list(pairwise ~ treatment), adjust = "tukey") #sig diff between brachiaria mono + Napier/Desmodium
+sum_k<- summary(tukey_k)
+sum_k$`emmeans of treatment`
+sum_k$`pairwise differences of treatment`
+sum_k$`pairwise differences of treatment`$p.value
+
+#Make table
+library(broom.mixed)
+library(kableExtra)
+
+kable(karama_diff, booktabs=T, caption="Karama All Timepoints: Mixed Effects Model DEA") %>%
+  column_spec(1, bold=T) %>%
+  as_image()
+
+##Coefficient plot
+lmer1 <-tidy(karama.lme1, effects=c("fixed", "ran_pars"), conf.int=TRUE)
+dwplot(lmer1)+
+  geom_vline(xintercept=0,lty=2) +
+  ggtitle("DEA Fixed Effects: Karama all timepoints")
+
+####Rubona model all timepoints####
+rubona.lme1 <- lmer(umol_kg_hr ~ treatment + (1|timepoint:block) -1, data=dea_rubona) 
+a <- summary(rubona.lme1)
+anova(rubona.lme1) #treatment sig at p=0 < 0.001
+
+#diagnostic plots
+qqmath(rubona.lme1,col=dea_rubona$timepoint,pch=dea_rubona$timepoint, main="QQ Plot: Rubona Mixed Effects Model All Timepoints")  #one timepoint has high residuals
+plot(rubona.lme1,sqrt(abs(residuals(.))) ~ fitted(.),type=c("p","smooth")) #patterned residuals; consider transforming
+
+plot(rubona.lme1, main="Residuals Plot: Rubona Station") #heteroscedacticity of pearson residuals
+qqnorm(residuals(rubona.lme1))
+
+#Means predictions and 95% CI
+ggemmeans(rubona.lme1, terms="treatment") #same as above
+
+#Anova
+anova(rubona.lme1) #trt sig at p<0.001
+
+#Post-hoc means sep
+emmeans(rubona.lme1, list(pairwise ~ treatment), adjust = "tukey") #sig diff between maize mono and napier mono
+
+##Coefficient plot
+
+lmer2 <-tidy(rubona.lme1, effects=c("fixed", "ran_pars"), conf.int=TRUE)
+dwplot(lmer2)+
+  geom_vline(xintercept=0,lty=2) +
+  ggtitle("DEA Fixed Effects: Rubona all timepoints")
+
+#Make table
+kable(lmer2, booktabs=T, caption="Rubona All Timepoints: Mixed Effects Model DEA") %>%
+  column_spec(1, bold=T) %>%
+  as_image()
+
+```
+
+```{r stats analysis by timepoint}
+
+### Lmers for within-timepoint treatment differences ###
+
+require(lmerTest)
+
+lmertest <- function (dat) {
+  dat <- station_final %>%
+    group_by(location, timepoint) %>%
+    nest() %>%
+    mutate(mod = map(data, ~lmer(umol_kg_hr ~ treatment + (1|block) -1, data = .)),
+           aov = map(mod, ~anova(.x)),
+           sig_trt = map(aov, ~round(.x$`Pr(>F)`, 3)), #overall treatment effect for location:timepoint
+           tukey = map(mod, ~summary(emmeans(.x, list(pairwise~treatment), adjust = 'tukey')))) #post-hoc means sep and pairwise comparisons w/ p.values
+      
+  #return objects useful for plotting and table summaries          
+  
+}
+
+
+each_timepoint <-lmertest(station_final)
+
+  
+#Sharon's code
+# dat <- pedons %>%
+#   group_by(bottom, top) %>%
+#   nest() %>%
+#   mutate(mod = map(data, ~possaov(oc ~ taxonname, data = .x)),
+#          p.value = ifelse(!is.na(mod), map(mod, ~format(round(summary(.x)[[1]][["Pr(>F)"]][[1]], 5))), NA),
+#          signif = case_when(
+#            p.value > 0.05 ~ "NS",
+#            p.value <= 0.05 & p.value > 0.01 ~ "*",
+#            p.value <= 0.01 & p.value > 0.001 ~ "**",
+#            p.value <= 0.001 ~ "***",
+#            is.null(p.value) ~ "NA")) %>%
+#   na.omit() %>%
+#   mutate(tukey = map(mod, ~HSD.test(., "taxonname", group = TRUE)$groups),
+#          tukey = map(tukey, ~(rownames_to_column(., var = "taxonname"))))
+
+
+```
+
+```{r stats analysis between-timepoint differences}
+
+
+### Univariate tests for between-timepoint differences ###
+
+univariate_by_harvest <- function(location_df) {
+  
+  t1 <-subset(location_df, timepoint %in% 1:2)
+  t2 <-subset(location_df, timepoint %in% 3:4)
+  t3 <- subset(location_df, timepoint %in% 5:6)
+
+
+  
+  
+  
+}
+
+
+
+
+```
+
+
+<!-- #all regions -->
+<!-- names(new_df) -->
+<!-- lme.1 <- lmer(B_mg_kg_NH4N~ region+trt + (1|farm:region), data=new_df) -->
+<!-- summary(lme.1) #cereal monoculture sig at p=0.02 -->
+
+<!-- anova(lme.1) #(trt marginal (p=0.11), region nonsig (p=0.22)) -->
+
+<!-- confint(lme.1) -->
+
+<!-- #diagnostic plots -->
+<!-- qqmath(lme.1,col=new_df$farm,pch=new_df$farm, main="QQ Plot: Mixed Effects Model All Regions") #high residuals from one farm -->
+<!-- plot(lme.1,sqrt(abs(residuals(.))) ~ fitted(.),type=c("p","smooth")) -->
+
+<!-- plot(lme.1, main="Residuals Plot: Mixed Effects Model All Regions") #heteroscedacticity of pearson residuals -->
+<!-- qqnorm(residuals(lme.1)) -->
+
+<!-- #get predicted mean effects -->
+<!-- library(ggeffects) -->
+<!-- ggpredict(lme.1) -->
+<!-- ggemmeans(lme.1, terms=c("trt", "region")) -->
+
+<!-- means <- difflsmeans(lme.1) #monocultre is sig different from napier and brachiaria -->
+
+<!-- #Coefficient plot -->
+<!-- library(dotwhisker) -->
+<!-- library(broom) -->
+<!-- library(dplyr) -->
+<!-- library(broom.mixed) -->
+
+<!-- lmer1 <-tidy(lme.1, effects=c("fixed", "ran_pars"), conf.int=TRUE) -->
+<!-- dwplot(lmer1)+ -->
+<!--   geom_vline(xintercept=0,lty=2) + -->
+<!--   ggtitle("Fixed Effects: All Regions") -->

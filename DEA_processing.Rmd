@@ -1,0 +1,380 @@
+---
+title: "DEA Analysis"
+author: "Marie Schaedel"
+date: "2/21/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggrepel)
+library(tidyverse)
+
+
+##data manipulation and reformatting
+library(reshape2) #melt function
+library(magrittr)
+library(stringr)
+library(lubridate)
+
+
+##data visualization
+library(ggpmisc) ###sts_poly_eq
+library(ggthemes) ##to change the look of graphs
+library(cowplot) ##for plot_grid
+library(ggrepel) ##for pretty labels
+library(kableExtra) #for making tables
+
+#Analysis
+library(emmeans)
+library(nlme)
+library(car)
+library(multcomp)
+library(multcompView)
+library(agricolae)
+library(dae)
+library(lme4) #mixed modeling
+library(vegan) #NMDS
+library(lattice) #faceted graphing
+library(lmerTest)
+library(dotwhisker) #lmer coefficient plots
+library(broom) #tidying lmers & graphing
+library(broom.mixed) #tidying lmers & graphing
+library(ggeffects) #lmer means separation
+
+```
+
+```{r read in data}
+
+#setwd("G:/HORT/GrossmanLab/UMN - Grossman Lab/Student Coursework/Marie/Thesis/Rwanda/Lab work/Raw Data/DEA/2020")
+#setwd for mac
+setwd("/Volumes/HORT/GrossmanLab/UMN - Grossman Lab/Student Coursework/Marie/Thesis/Rwanda/Lab work/Raw Data/DEA/2020")
+
+directory <- "/Volumes/CFANS/HORT/GrossmanLab/UMN - Grossman Lab/Student Coursework/Marie/Thesis/Rwanda/Lab work/Raw Data/DEA/2020"
+
+list_of_files <- list.files(path = directory, recursive = TRUE,
+                            pattern = ".csv$", full.names=FALSE)
+
+
+dat_csv = plyr::ldply(list_of_files, read_csv)
+
+head(dat_csv)
+
+```
+
+```{r plot std curve}
+#separate standards and make sure that each batch is associated with an ambient control to serve as 0 ppm
+
+std_dat <- dat_csv %>%
+  filter(grepl("Mix|Amb", sample)) %>%
+  filter(!str_detect(sample, "Mix3")) %>% #get rid of Mix3 bc ppm is too high
+  mutate(ppm = ifelse(str_detect(sample, "Mix1"), 0.301, ppm)) %>%
+  mutate(ppm = ifelse(str_detect(sample, "Mix2"), 2.046, ppm)) %>%
+  #complete(unique_batch, nesting(sample)) %>%
+  #arrange(sample) %>%
+  mutate(ppm = as.double(ppm)) %>%
+  mutate(area = as.numeric((area)))
+  
+
+amb_df <- function(std_dat){
+  
+  ##make a summarized version of the ambiance controls
+  amb_dat <- std_dat %>%
+    filter(grepl("Amb", sample)) %>%
+    group_by(unique_batch) %>%
+    summarize(mean_area = mean(area, na.rm=TRUE)) %>%
+    mutate(area = mean_area,
+           GCnum = "", 
+           date = "",
+           compound = "N2O",
+           retention = as.double(""),
+           height = as.double(""),
+           batch = 1,
+           ppm = 0, 
+           redo = ""
+           )
+}
+
+amb_sum <- amb_df(std_dat)
+
+std_dat <- std_dat %>%
+  filter(grepl("Mix", sample))
+
+new_stds <- dplyr::bind_rows(amb_sum, std_dat) 
+
+#get rid of extra mean_area col
+new_stds <- subset(new_stds, select = -mean_area)
+
+
+#function to calculate and extract std curve info
+
+getStds <- function(new_stds){
+  length_fun  <- function(d)
+    length(d$ppm)
+    
+  stds_ppm <- new_stds%>%
+    tidyr::nest(-unique_batch) %>%
+    mutate(num=map(data, ~ length_fun(.x))) %>%
+    
+  mutate(model=map(data, ~lm(ppm~area, data=.)),
+        adj.r.squared=map_dbl(model, ~signif(summary(.x)$adj.r.squared, 5)),
+        intercept = map_dbl(model, ~ signif(.x$coef[[1]], 5)),
+        slope = map_dbl(model, ~signif(.x$coef[[2]], 5))) %>%  
+    
+  mutate(num = map(data, ~ length_fun(.x)))%>%
+  
+   mutate(plot = map2(data, unique_batch, ~ggplot(data = ., aes(y = ppm, x = area),   aes_string(ppm, area)) +
+                       geom_smooth(method = "lm", se=FALSE, formula = y ~ x) +
+                       geom_point()+
+                       ggtitle(paste0(.y)) +
+                       xlab("Area") +
+                       ylab("Concentration ppm") +
+                       stat_poly_eq(parse=T, rr.digits = 4, 
+                                   aes(label = paste(stat(..eq.label..), 
+                                                     stat(..adj.rr.label..),sep = "~~~~")),
+                                   formula=y~x)
+                       ))
+    good_std_dat <- stds_ppm
+    return(list("std_dat_calc" = good_std_dat))
+}
+
+New_std_dat <- getStds(new_stds)
+names(New_std_dat)
+  
+std_info <- New_std_dat$std_dat_calc #extract std info
+
+final_std <- std_info %>%
+    dplyr::select(unique_batch, adj.r.squared, intercept, slope)%>%
+    unnest()
+  
+plot_grid(plotlist=std_info$plot)
+
+
+
+```
+
+
+```{r calculate ppm from the std curve}
+
+#Create a df without standards and ambient samples
+ppm_df <- dat_csv %>%
+  filter(!str_detect(sample, "Mix")) %>%
+  filter(!str_detect(sample, "Amb")) %>%
+  filter(is.na(redo)) 
+  #mutate(ppm = (New_std_dat$intercept + (area*New_std_dat$slope))) %>% #calculate ppm by adding intercept plus area*slope
+ 
+
+ppm_calc <- function(df, stds){
+  
+  clean_df <- left_join(ppm_df, final_std, by="unique_batch") %>%
+  subset(select = -c(adj.r.squared, retention, time, height, batch)) %>% #get rid of columns we don't need
+  mutate(timepoint = as.numeric(str_split_fixed(sample, "-", n=2)[ ,2])) %>%
+  mutate(timepoint = ifelse(timepoint==45, 0.75, #change timepoint units to hrs from mins
+                            ifelse(timepoint==90, 1.5,
+                                   ifelse(timepoint==0,0,
+                                          timepoint==timepoint)))) %>%
+  mutate(sample = as.character(sample)) %>% 
+  mutate(sample = str_sub(sample, 1, str_length(sample)-3)) %>% #chop off the last three characters
+  mutate(ppm = area*slope + intercept) #calculate ppm for sample
+  return(clean_df)
+}
+
+
+df <- ppm_calc (ppm_df, final_std) 
+
+temp_dat <- df %>%
+    filter(!str_detect(sample, "C")) %>%
+  rename(collect_time='timepoint') #df without controls
+  
+c_dat <- df %>%
+  filter(str_detect(sample, "C")) #df with only controls
+
+
+```
+
+
+
+```{r separate time zero soilless controls}
+
+#create control summary to join back with sample df
+
+# c_df <- c_dat %>%
+#   group_by(unique_batch, timepoint) %>%
+#   summarize(mean_area = mean(area, na.rm = TRUE))
+# names(c_df) <- c("unique_batch", "timepoint", "area") #changing col names so they match sample df
+
+#c_info <- c_df$data
+#std_info <- New_std_dat$std_dat_calc
+
+#look at control values
+ggplot(c_dat, aes(x=area)) + 
+  geom_density(fill="lightblue")
+
+#df with only zeros
+zero_dat <- subset(c_dat, timepoint==0) %>%
+  subset(select=-c(sample, redo, intercept, slope, compound, date)) %>%
+  rename(collect_time='timepoint')
+
+#look at time zero controls
+ggplot(zero_dat, aes(x=area)) + 
+  geom_density(fill="pink")
+
+#create 'dummy' df of all samples containing: sample ID, unique_batch, and collect_time(0)
+
+x <- temp_dat$sample
+y <- temp_dat$unique_batch
+
+
+ddf <- cbind(x,y) %>%
+  as.data.frame() %>%
+  rename(sample = "x", unique_batch = "y") %>%
+  mutate(collect_time = 0)
+
+#join 'dummy' df back to zero_dat
+
+zero_samps <- merge(ddf, zero_dat, by = "unique_batch", all.x = FALSE, no.dups = TRUE) %>%
+  subset(select = -collect_time.y) %>%
+  rename(collect_time = 'collect_time.x') %>%
+  group_by(sample, collect_time) %>%
+  summarize(mean_area = mean(area, na.rm = TRUE),
+            mean_ppm = mean(ppm, na.rm = TRUE)) %>%
+  rename(area = 'mean_area', ppm = 'mean_ppm')
+  
+
+#merge zero data back to main sample df
+
+new_df <- rbind(zero_samps, temp_dat) %>%
+  subset(select=-c(GCnum, date, compound,intercept, slope, redo, unique_batch, area)) 
+
+```
+
+
+```{r read in metadata}
+
+setwd("/Volumes/CFANS/HORT/GrossmanLab/UMN - Grossman Lab/Student Coursework/Marie/Thesis/Rwanda/Lab work/Raw Data/DEA")
+
+metadata <- read.csv("DEA_metadata.csv")
+
+metadata <- metadata %>%
+  mutate(sample = Sample) %>%
+  subset(select = -c(Sample, DEA_moistsoil))
+
+metadata$sample <- as.character(metadata$sample)
+
+#join metadata to sample df
+full_df <- new_df %>%
+  right_join(metadata, by = "sample")
+
+```
+
+
+```{r calculate N2O}
+
+  mol_calc <- function(ppm_df) {
+  
+    #1. Calculate total gas (headspace) volume in serum vial
+    #Total volume of vial = 160 ml = 0.16 L
+    #Subtract:
+          #Solution volume = 5 ml = 0.05 L
+          #Water volume in soil: wet soil mass - dry soil mass
+          #Volume occupied by dry soil: assume 2.65g dry soil = 1 ml
+    
+    full_df <- ppm_df %>%
+      mutate(headspace = 0.160 - 0.005 - (0.001*DEA_watervol) - (0.001*(DEA_truesoil/2.65))) %>%
+      
+  #2. Calculate out ppm in vial based on ppm in the 10-ml sample
+    
+      mutate(ppm_bottle = ppm*(headspace/0.01)) #represents total ppms of N2O in headspace of serum bottle; ml units cancel out; unit is mg/L
+      
+    #3. Convert to molar quantity and express as umol/kg dry soil
+    #molar mass N2O = 44.013 g/mol
+
+  calc_df <- full_df %>%
+    mutate(mol_n2o_bottle = 0.001*(ppm_bottle*headspace)/44.013) %>% #molar mass unit is in g/mol, so convert to mg/mol ; unit is now mol/L
+    mutate(umol_n2o_bottle = 1000000*mol_n2o_bottle) %>% #convert to umole (micromole)
+    mutate(umol_kg = umol_n2o_bottle / (DEA_truesoil/1000)) %>% #represents moles N2O produced per kg dry soil; 1 kg = 1 L water
+    subset(select = -c(DEA_watervol, headspace))
+  
+  return(calc_df)
+  
+  }
+
+    
+calc_df <- mol_calc(full_df) 
+
+
+```
+
+
+```{r calculate N2O production rate}
+
+calcDEA <- function(df) {
+  
+  length_fun  <- function(d)
+  length(d$umol_kg)
+  
+  dea_df <- df %>%
+    drop_na(ppm) %>%
+    nest(-sample) %>%
+    mutate(num=map(data, ~ length_fun(.x))) %>%
+    
+    
+    mutate(model=map(data, ~lm(umol_kg~collect_time, data=.)),
+        adj.r.squared=map_dbl(model, ~signif(summary(.x)$adj.r.squared, 5)),
+        intercept = map_dbl(model, ~ signif(.x$coef[[1]], 5)),
+         slope = map_dbl(model, ~signif(.x$coef[[2]], 5))) %>%  
+  
+    mutate(num = map(data, ~ length_fun(.x)))
+    
+    dea_calc_df <- dea_df
+  
+    return(dea_calc_df)
+   # return(list("dea_calc" = dea_calc_df))
+    
+}
+
+
+dea_df <- calcDEA(calc_df) %>%
+  unnest(data) 
+
+
+```
+
+
+
+```{r final dataframes}
+
+#clean df containing only dea rate info for analysis 
+rate <- dea_df %>%
+  group_by(sample) %>%
+  subset(select = -c(collect_time, ppm, DEA_truesoil, ppm_bottle, mol_n2o_bottle, umol_n2o_bottle, umol_kg)) %>%
+  rename(umol_kg_hr = 'slope') #dea unit is: umol N2O /kg / hr
+  
+
+rate_final <- rate[!duplicated(rate$sample), ]
+
+
+
+#clean df containing collect_time info for graphing 
+
+dea_final <- dea_df %>%
+  group_by(sample) %>%
+  subset(select = -c(ppm, DEA_truesoil, ppm_bottle)) %>%
+  rename(umol_kg_hr = 'slope') #dea unit is: umol N2O /kg / hr
+  
+
+#save final files
+
+setwd("/Volumes/CFANS/HORT/GrossmanLab/UMN - Grossman Lab/Student Coursework/Marie/Thesis/Rwanda/Lab work/FinalData/2020")
+
+csv <- dea_final %>%
+  subset(select=-c(model, num)) %>%
+  as.data.frame()
+
+write.csv(csv, "dea_final.csv") #final data file to be used for analysis
+
+```
+
